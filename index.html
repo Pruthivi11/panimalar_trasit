@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Panimalar Smart Transit · Bus 138</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <style>
+        :root {
+            --blue: #2563eb; --blue-dark: #1d4ed8;
+            --green: #22c55e; --orange: #f97316;
+            --pink: #db2777; --red: #ef4444;
+            --bg: #eef2ff; --surface: #ffffff;
+            --border: #e8edf8; --text: #0f172a; --muted: #64748b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(145deg, #eef2ff 0%, #dde6ff 100%);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; padding: 20px;
+        }
+        .app-shell {
+            max-width: 460px; width: 100%; height: 860px;
+            background: #fff; border-radius: 44px;
+            box-shadow: 0 32px 60px -20px rgba(37,99,235,0.25), 0 0 0 1px rgba(255,255,255,0.6) inset;
+            display: flex; flex-direction: column; overflow: hidden; position: relative;
+        }
+        .app-header {
+            padding: 14px 20px; background: white; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+        }
+        .logo-box {
+            width: 42px; height: 42px; background: white; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden; border: 1px solid #e2e8f0;
+        }
+        .app-header h1 {
+            font-size: .95rem; font-weight: 800;
+            background: linear-gradient(130deg, #0f2b3d, #2563eb);
+            -webkit-background-clip: text; background-clip: text;
+            color: transparent; letter-spacing: -0.3px; line-height: 1.2;
+        }
+        .live-pill {
+            margin-left: auto; padding: 5px 11px;
+            border-radius: 50px; font-size: 10px; font-weight: 800;
+            display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+            transition: all 0.4s ease;
+        }
+        .live-pill.connected { background: #dcfce7; color: #15803d; }
+        .live-pill.disconnected { background: #fee2e2; color: #dc2626; }
+        .live-pill.waiting { background: #fef3c7; color: #92400e; }
+        .pulse-dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            animation: blink 1.2s ease-in-out infinite alternate;
+        }
+        .connected .pulse-dot { background: var(--green); }
+        .disconnected .pulse-dot { background: var(--red); animation: none; }
+        .waiting .pulse-dot { background: #f59e0b; }
+        @keyframes blink { from { opacity:.4;transform:scale(.8); } to { opacity:1;transform:scale(1.3); } }
+
+        /* ── Firebase live status strip ── */
+        .fb-status-strip {
+            display: flex; align-items: center; gap: 8px;
+            padding: 7px 16px; font-size: 11px; font-weight: 700;
+            border-bottom: 1px solid var(--border);
+            transition: background 0.4s, color 0.4s;
+        }
+        .fb-status-strip.live    { background: #f0fdf4; color: #15803d; }
+        .fb-status-strip.offline { background: #fef2f2; color: #dc2626; }
+        .fb-status-strip.waiting { background: #fefce8; color: #92400e; }
+        .fb-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+        .fb-status-strip.live .fb-dot { animation: blink 1.2s ease-in-out infinite alternate; }
+        .fb-strip-ts { margin-left: auto; font-size: 10px; font-weight: 500; opacity: 0.7; }
+
+        .my-stop-banner {
+            background: linear-gradient(135deg, #1e40af, #2563eb);
+            padding: 10px 16px; display: none; align-items: center; gap: 10px; flex-shrink: 0;
+        }
+        .my-stop-banner.visible { display: flex; }
+        .my-stop-label { font-size: 10px; font-weight: 800; color: #93c5fd; text-transform: uppercase; letter-spacing: 1px; }
+        .my-stop-name { font-size: 13px; font-weight: 800; color: white; }
+        .my-stop-eta-big { margin-left: auto; text-align: right; flex-shrink: 0; }
+        .my-stop-eta-big .eta-num { font-size: 22px; font-weight: 800; color: white; line-height: 1; }
+        .my-stop-eta-big .eta-unit { font-size: 10px; font-weight: 700; color: #93c5fd; }
+        .my-stop-change { font-size: 11px; color: #93c5fd; cursor: pointer; text-decoration: underline; margin-top: 2px; }
+
+        .page-container {
+            flex: 1; overflow-y: auto; padding: 14px 14px 8px;
+            scrollbar-width: thin; scrollbar-color: #c7d2fe transparent;
+        }
+        .page { display: none; flex-direction: column; gap: 12px; animation: fadeUp .3s ease; }
+        .page.active { display: flex; }
+        @keyframes fadeUp { from { opacity:0;transform:translateY(12px); } to { opacity:1;transform:translateY(0); } }
+
+        .btn {
+            border: none; padding: 13px 20px; border-radius: 40px;
+            font-weight: 700; font-size: 14px; font-family: inherit;
+            color: white; width: 100%; cursor: pointer; transition: all .18s ease;
+        }
+        .btn-primary { background: var(--blue); }
+        .btn-primary:hover { background: var(--blue-dark); transform: scale(.98); }
+        .btn-secondary { background: #f1f5f9; color: #1e293b; border: 1px solid #e2e8f0; }
+        .btn-secondary:hover { background: #e8edf8; }
+        .section-label {
+            font-size: 10px; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 1.4px; color: var(--muted);
+        }
+        select, input[type=text] {
+            width: 100%; padding: 12px 16px; border-radius: 30px;
+            border: 1.5px solid #e2edf2; background: #fafbff;
+            font-size: 13px; font-family: inherit; outline: none; color: var(--text);
+        }
+        select:focus, input[type=text]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,0.15); }
+
+        .bus-info-card {
+            background: linear-gradient(135deg, #1e40af, #2563eb);
+            border-radius: 20px; padding: 16px 18px; color: white;
+        }
+        .bus-info-card .bus-number { font-size: 32px; font-weight: 800; line-height: 1; }
+        .bus-info-card .bus-route-label { font-size: 11px; font-weight: 700; color: #93c5fd; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+        .bus-info-card .bus-route-text { font-size: 13px; font-weight: 700; margin-top: 3px; }
+        .bus-info-card .bus-destination { font-size: 11px; color: #bfdbfe; margin-top: 6px; display: flex; align-items: center; gap: 5px; }
+
+        /* Live location data card */
+        .live-data-card {
+            background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+            border: 1.5px solid #86efac; border-radius: 20px;
+            padding: 12px 16px; display: none;
+        }
+        .live-data-card.visible { display: block; }
+        .live-data-card.offline-mode {
+            background: linear-gradient(135deg, #fef2f2, #fee2e2);
+            border-color: #fca5a5;
+        }
+        .live-data-card.waiting-mode {
+            background: linear-gradient(135deg, #fefce8, #fef3c7);
+            border-color: #fde68a;
+        }
+        .ldc-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .ldc-title { font-size: 12px; font-weight: 800; flex: 1; }
+        .ldc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .ldc-item { background: rgba(255,255,255,0.7); border-radius: 12px; padding: 8px 10px; }
+        .ldc-label { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: #374151; opacity: 0.7; }
+        .ldc-value { font-size: 13px; font-weight: 800; color: #15803d; margin-top: 2px; }
+        .live-data-card.offline-mode .ldc-value { color: #dc2626; }
+        .live-data-card.waiting-mode .ldc-value { color: #92400e; }
+
+        .destination-badge {
+            background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 14px;
+            padding: 10px 14px; display: flex; align-items: center; gap: 8px;
+            font-size: 12px; font-weight: 700; color: #1d4ed8;
+        }
+
+        .bus-card {
+            background: white; border-radius: 20px; padding: 12px 14px;
+            border: 1.5px solid #eef2ff; cursor: pointer; transition: .18s;
+        }
+        .bus-card:hover { transform: translateY(-2px); border-color: #bfd0f8; }
+        .bus-card-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .bus-card-meta { display: flex; flex-direction: column; gap: 3px; }
+        .bus-card-num { font-weight: 800; font-size: 14px; }
+        .bus-card-sub { font-size: 11px; color: var(--muted); }
+        .bus-card-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        .badge { padding: 4px 10px; border-radius: 60px; font-size: 10px; font-weight: 800; color: white; }
+        .badge-138 { background: var(--blue); }
+
+        .status-badge { padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 800; }
+        .status-ontime { background: #dcfce7; color: #15803d; }
+        .status-delayed { background: #fee2e2; color: #dc2626; }
+        .status-offline { background: #f1f5f9; color: #64748b; }
+
+        .route-progress-wrap {
+            background: white; border-radius: 20px; padding: 12px 14px;
+            border: 1.5px solid #eef2ff; margin-top: 2px;
+        }
+        .rp-title { font-size: 11px; font-weight: 800; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+        .rp-bus-row { margin-bottom: 12px; }
+        .rp-bus-label { font-size: 11px; font-weight: 800; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+        .rp-track { position: relative; height: 6px; background: #f1f5f9; border-radius: 10px; margin: 8px 0 4px; }
+        .rp-fill { height: 100%; border-radius: 10px; transition: width 1.2s ease; }
+        .rp-stops { display: flex; justify-content: space-between; }
+        .rp-stop-dot { display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; cursor: default; }
+        .rp-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #e2e8f0; border: 2px solid white;
+            box-shadow: 0 1px 3px rgba(0,0,0,.12); z-index: 2; transition: background .3s;
+        }
+        .rp-dot.passed { background: #94a3b8; }
+        .rp-dot.current { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,.3); animation: stopPulse 1.5s ease infinite; }
+        .rp-dot.future { background: #e2e8f0; }
+        .rp-stop-name { font-size: 8px; font-weight: 700; color: var(--muted); max-width: 44px; text-align: center; line-height: 1.2; }
+        .rp-bus-icon { position: absolute; top: -10px; font-size: 16px; transform: translateX(-50%); transition: left 1.2s ease; pointer-events: none; }
+
+        .map-card {
+            width: 100%; height: 260px; border-radius: 26px;
+            overflow: hidden; border: 1.5px solid #eef2ff;
+            position: relative; background: #e2e8f0;
+        }
+        .live-badge {
+            position: absolute; top: 12px; right: 12px;
+            background: rgba(0,0,0,0.78); backdrop-filter: blur(8px);
+            padding: 5px 12px; border-radius: 60px;
+            font-size: 10px; font-weight: 700; color: white;
+            display: flex; align-items: center; gap: 6px;
+            z-index: 500; pointer-events: none;
+        }
+        /* Offline overlay on map */
+        .map-offline-overlay {
+            position: absolute; inset: 0; z-index: 600;
+            background: rgba(255,255,255,0.85); backdrop-filter: blur(4px);
+            display: none; flex-direction: column; align-items: center;
+            justify-content: center; border-radius: 26px; gap: 8px;
+        }
+        .map-offline-overlay.show { display: flex; }
+        .map-offline-overlay .off-icon { font-size: 32px; }
+        .map-offline-overlay .off-text { font-size: 13px; font-weight: 800; color: #374151; }
+        .map-offline-overlay .off-sub { font-size: 11px; color: #64748b; text-align: center; padding: 0 20px; }
+
+        .info-bar {
+            background: #f0f4fe; border-radius: 50px; padding: 10px 16px;
+            font-weight: 600; font-size: 12px;
+            display: flex; justify-content: center; gap: 8px; align-items: center;
+        }
+
+        .tracker {
+            background: #fff; border-radius: 22px; border: 1.5px solid #ecf3fa;
+            padding: 12px 10px; max-height: 300px; overflow-y: auto;
+        }
+        .tracker-bus-section { margin-bottom: 18px; }
+        .tracker-bus-label {
+            font-size: 12px; font-weight: 800;
+            display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+        }
+        .tracker-bus-badge { padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 800; color: white; }
+        .stop-row { display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; position: relative; }
+        .stop-timeline { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 20px; padding-top: 2px; }
+        .stop-circle {
+            width: 12px; height: 12px; border-radius: 50%;
+            background: #cbd5e1; border: 2px solid white;
+            box-shadow: 0 1px 3px rgba(0,0,0,.12);
+            flex-shrink: 0; z-index: 2; transition: background .3s, box-shadow .3s;
+        }
+        .stop-row.current .stop-circle { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,.3); animation: stopPulse 1.5s ease infinite; }
+        .stop-row.past .stop-circle { background: #94a3b8; }
+        .stop-row.future .stop-circle { background: #e2e8f0; }
+        @keyframes stopPulse { 0%,100%{box-shadow:0 0 0 3px rgba(34,197,94,.3);} 50%{box-shadow:0 0 0 6px rgba(34,197,94,.15);} }
+        .stop-connector { width: 2px; flex: 1; min-height: 20px; background: #e2e8f0; margin: 2px 0; }
+
+        .stop-row.my-stop .stop-name-text { color: var(--blue) !important; font-weight: 800; }
+        .my-stop-pin { font-size: 10px; background: #dbeafe; color: var(--blue); padding: 1px 6px; border-radius: 20px; font-weight: 800; margin-left: 4px; }
+
+        .stop-info { flex: 1; }
+        .stop-name-text { font-size: 12px; font-weight: 700; color: var(--text); transition: color .3s; }
+        .stop-row.current .stop-name-text { color: #16a34a; }
+        .stop-row.past .stop-name-text { color: var(--muted); }
+        .stop-eta { font-size: 10px; font-weight: 700; margin-top: 2px; color: var(--orange); }
+        .stop-row.past .stop-eta { color: #94a3b8; }
+        .stop-row.current .stop-eta { color: var(--green); }
+
+        .bottom-nav { display: flex; background: white; border-top: 1px solid #eef2f8; padding: 8px 18px 16px; gap: 8px; flex-shrink: 0; }
+        .bottom-btn { flex: 1; background: transparent; border: none; padding: 9px 0; font-weight: 700; font-size: 11px; font-family: inherit; color: #94a3b8; border-radius: 40px; cursor: pointer; transition: .18s; }
+        .bottom-btn.active { background: #eef2ff; color: var(--blue); }
+
+        .legend { display: flex; justify-content: center; gap: 14px; font-size: 10px; font-weight: 600; color: var(--muted); }
+        .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+
+        .notif-container { position: fixed; top: 20px; right: 20px; z-index: 99999; display: flex; flex-direction: column; gap: 10px; max-width: 320px; }
+        .notif-card {
+            background: white; border-radius: 18px; padding: 14px 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.05);
+            display: flex; gap: 12px; align-items: flex-start;
+            transform: translateX(340px); opacity: 0;
+            transition: transform .35s cubic-bezier(.34,1.56,.64,1), opacity .3s ease;
+        }
+        .notif-card.show { transform: translateX(0); opacity: 1; }
+        .notif-card.hide { transform: translateX(340px); opacity: 0; }
+        .notif-icon { font-size: 28px; flex-shrink: 0; margin-top: -2px; }
+        .notif-body { flex: 1; }
+        .notif-app { font-size: 10px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+        .notif-title { font-size: 13px; font-weight: 800; color: var(--text); margin-top: 2px; }
+        .notif-sub { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+        .notif-time { font-size: 10px; color: #adb5bd; margin-top: 5px; }
+        .notif-progress { height: 3px; background: #f1f5f9; border-radius: 10px; margin-top: 8px; overflow: hidden; }
+        .notif-progress-fill { height: 100%; background: var(--blue); border-radius: 10px; width: 100%; transition: width linear; }
+
+        .eta-sticky {
+            background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+            border: 1.5px solid #86efac; border-radius: 20px;
+            padding: 10px 14px; display: none; align-items: center; gap: 10px;
+        }
+        .eta-sticky.visible { display: flex; }
+        .eta-sticky-icon { font-size: 22px; }
+        .eta-sticky-body { flex: 1; }
+        .eta-sticky-label { font-size: 10px; font-weight: 800; color: #15803d; text-transform: uppercase; letter-spacing: 1px; }
+        .eta-sticky-time { font-size: 20px; font-weight: 800; color: #166534; line-height: 1; margin-top: 2px; }
+        .eta-sticky-stop { font-size: 11px; color: #16a34a; margin-top: 1px; }
+        .eta-sticky-pulse { width: 10px; height: 10px; background: var(--green); border-radius: 50%; animation: blink 1s ease-in-out infinite alternate; flex-shrink: 0; }
+
+        .profile-row { background: #f8fafc; border-radius: 18px; padding: 12px 16px; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+
+        .alert-config {
+            background: #fefce8; border: 1.5px solid #fde68a; border-radius: 20px; padding: 12px 14px;
+        }
+        .alert-config-title { font-size: 12px; font-weight: 800; color: #92400e; margin-bottom: 6px; }
+        .alert-config-row { display: flex; align-items: center; gap: 8px; }
+        .alert-config select { flex: 1; background: white; }
+        .alert-config-btn {
+            background: #f59e0b; color: white; border: none; padding: 10px 14px;
+            border-radius: 30px; font-weight: 800; font-size: 12px; font-family: inherit;
+            cursor: pointer; flex-shrink: 0;
+        }
+        .alert-config-btn:hover { background: #d97706; }
+        .permission-note { font-size: 10px; color: #92400e; margin-top: 6px; }
+
+        .campus-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .campus-chip {
+            background: #f8fafc; border-radius: 14px; padding: 10px 12px;
+            font-size: 11px; font-weight: 700; color: #334155; text-align: center;
+            border: 1.5px solid #e2e8f0; cursor: pointer; transition: .18s; line-height: 1.4;
+        }
+        .campus-chip:hover { border-color: #bfd0f8; background: #eef2ff; }
+        .campus-chip .chip-icon { font-size: 16px; display: block; margin-bottom: 3px; }
+
+        .notice-bar {
+            width: 100%; background: linear-gradient(90deg, #1e40af, #2563eb);
+            color: white; overflow: hidden; height: 32px;
+            display: flex; align-items: center; cursor: pointer;
+        }
+        .notice-track {
+            display: flex; white-space: nowrap;
+            animation: scrollLeft 18s linear infinite;
+        }
+        .notice-item { margin-right: 60px; font-size: 12px; font-weight: 700; }
+        @keyframes scrollLeft {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
+        .notice-bar:hover .notice-track { animation-play-state: paused; }
+
+        .track-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .track-stat-card {
+            background: #f8fafc; border-radius: 16px; padding: 10px 12px;
+            border: 1.5px solid #e8edf8;
+        }
+        .track-stat-label { font-size: 9px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+        .track-stat-value { font-size: 15px; font-weight: 800; color: var(--text); margin-top: 3px; }
+        .track-stat-sub { font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+        /* Accuracy ring around bus marker */
+        @keyframes accuracyPulse {
+            0%   { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+            100% { opacity: 0;   transform: translate(-50%, -50%) scale(1.8); }
+        }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <div class="app-header">
+        <div class="logo-box">
+            <img src="logo.jpg" alt="logo" style="width:100%;height:100%;object-fit:contain;border-radius:8px;"
+                 onerror="this.style.display='none';this.parentElement.textContent='🚌'">
+        </div>
+        <h1>Panimalar<br>Smart Transit</h1>
+        <div class="live-pill waiting" id="livePill">
+            <div class="pulse-dot"></div>
+            <span id="livePillText">Connecting…</span>
+        </div>
+    </div>
+
+    <!-- Firebase live status strip -->
+    <div class="fb-status-strip waiting" id="fbStrip">
+        <div class="fb-dot"></div>
+        <span id="fbStripText">Connecting to Firebase…</span>
+        <span class="fb-strip-ts" id="fbStripTs">--:--</span>
+    </div>
+
+    <div class="notice-bar">
+        <div class="notice-track">
+            <span class="notice-item">🚌 Bus No 138 — Porur Junction → Panimalar Engineering College · Live GPS Tracking Active</span>
+            <span class="notice-item">🚌 Bus No 138 — Porur Junction → Panimalar Engineering College · Live GPS Tracking Active</span>
+        </div>
+    </div>
+
+    <div class="my-stop-banner" id="myStopBanner">
+        <div>
+            <div class="my-stop-label">📍 My Stop</div>
+            <div class="my-stop-name" id="bannerStopName">—</div>
+            <div class="my-stop-change" onclick="switchPage('searchPage')">Change stop</div>
+        </div>
+        <div class="my-stop-eta-big">
+            <div class="eta-num" id="bannerEtaNum">—</div>
+            <div class="eta-unit">min away</div>
+        </div>
+    </div>
+
+    <div class="page-container">
+
+        <!-- HOME -->
+        <div id="homePage" class="page active">
+            <div style="text-align:center;margin:12px 0 4px">
+                <div style="font-size:52px;">🚌</div>
+                <h2 style="font-size:20px;font-weight:800;margin-top:8px;">Panimalar Smart Transit</h2>
+                <p style="color:var(--muted);margin-top:4px;font-size:12px;">Track Bus 138 — Live GPS via Firebase</p>
+            </div>
+
+            <div class="bus-info-card">
+                <div class="bus-number">Bus 138</div>
+                <div class="bus-route-label">Active Route</div>
+                <div class="bus-route-text">📍 Porur Junction → Panimalar Engineering College</div>
+                <div class="bus-destination">🏫 Destination: Panimalar Engineering College</div>
+            </div>
+
+            <!-- Live location summary on home -->
+            <div class="live-data-card waiting-mode" id="homeLiveCard">
+                <div class="ldc-header">
+                    <span style="font-size:16px">📡</span>
+                    <span class="ldc-title" id="homeLiveTitle">Waiting for driver to start tracking…</span>
+                </div>
+                <div class="ldc-grid" id="homeLiveGrid" style="display:none">
+                    <div class="ldc-item"><div class="ldc-label">Accuracy</div><div class="ldc-value" id="homeAccuracy">—</div></div>
+                    <div class="ldc-item"><div class="ldc-label">Updated</div><div class="ldc-value" id="homeUpdated">—</div></div>
+                    <div class="ldc-item"><div class="ldc-label">Status</div><div class="ldc-value" id="homeStatus">—</div></div>
+                    <div class="ldc-item"><div class="ldc-label">Route</div><div class="ldc-value" id="homeRoute">—</div></div>
+                </div>
+            </div>
+
+            <button class="btn btn-primary" onclick="switchPage('searchPage')">🚌 Track Bus 138 Live</button>
+            <button class="btn btn-secondary" onclick="switchPage('navPage')">📍 Campus Navigation</button>
+
+            <div class="legend">
+                <div><span class="legend-dot" style="background:var(--green)"></span>Live Bus</div>
+                <div><span class="legend-dot" style="background:var(--orange);border-radius:2px;"></span>Route</div>
+                <div><span class="legend-dot" style="background:var(--blue)"></span>You</div>
+            </div>
+            <div id="homeProgressWrap"></div>
+        </div>
+
+        <!-- SEARCH / TRACK SETUP -->
+        <div id="searchPage" class="page">
+            <button class="btn btn-secondary" onclick="switchPage('homePage')">← Dashboard</button>
+
+            <div class="bus-info-card">
+                <div class="bus-number">🚌 138</div>
+                <div class="bus-route-label">Porur Junction → Panimalar Engineering College</div>
+                <div class="bus-destination">🏫 Terminus: Panimalar Engineering College</div>
+            </div>
+
+            <div class="alert-config">
+                <div class="alert-config-title">🔔 Alert me when Bus 138 approaches my stop</div>
+                <div class="alert-config-row">
+                    <select id="boardingSelect" style="margin:0"></select>
+                    <button class="alert-config-btn" onclick="saveStop()">⭐ Set</button>
+                </div>
+                <div class="permission-note" id="permNote">Tap Set to enable stop alerts with sound</div>
+            </div>
+
+            <button class="btn btn-primary" id="searchBtn">✨ Track Bus 138 Now</button>
+            <div id="busResults"></div>
+        </div>
+
+        <!-- CAMPUS NAV -->
+        <div id="navPage" class="page">
+            <button class="btn btn-secondary" onclick="switchPage('homePage')">← Back</button>
+            <div class="destination-badge" style="background:#f0fdf4;border-color:#86efac;color:#166534;">
+                📍 Panimalar Engineering College — Poonamallee, Chennai
+            </div>
+            <div class="section-label">Quick Navigate</div>
+            <div class="campus-grid" id="campusQuickGrid"></div>
+            <div class="section-label">From</div>
+            <select id="campusFrom"></select>
+            <div class="section-label">To</div>
+            <select id="campusTo"></select>
+            <button class="btn btn-primary" id="campusNavBtn">Show Route on Campus</button>
+            <div id="campusInfoBar" class="info-bar" style="display:none"></div>
+            <div id="campusMapDiv" class="map-card"></div>
+        </div>
+
+        <!-- LIVE TRACK PAGE -->
+        <div id="trackPage" class="page">
+            <button class="btn btn-secondary" onclick="switchPage('searchPage')">← Change Stop</button>
+
+            <div class="eta-sticky" id="etaSticky">
+                <div class="eta-sticky-icon">🚏</div>
+                <div class="eta-sticky-body">
+                    <div class="eta-sticky-label">⏱ Bus 138 at your stop</div>
+                    <div class="eta-sticky-time" id="etaStickyTime">—</div>
+                    <div class="eta-sticky-stop" id="etaStickyStop">—</div>
+                </div>
+                <div class="eta-sticky-pulse"></div>
+            </div>
+
+            <div style="position:relative">
+                <div id="liveMap" class="map-card" style="height:260px"></div>
+                <div class="live-badge" id="liveMapBadge">
+                    <div class="pulse-dot" style="background:var(--green)"></div>
+                    <span id="liveMapBadgeText">LIVE GPS</span>
+                </div>
+                <!-- Overlay when bus is offline -->
+                <div class="map-offline-overlay" id="mapOfflineOverlay">
+                    <div class="off-icon">📡</div>
+                    <div class="off-text" id="offlineOverlayTitle">Driver not tracking</div>
+                    <div class="off-sub" id="offlineOverlaySub">Bus 138 GPS is offline. The map will update automatically when the driver starts tracking.</div>
+                </div>
+            </div>
+            <div class="legend">
+                <div><span class="legend-dot" style="background:var(--blue)"></span>You</div>
+                <div><span class="legend-dot" style="background:var(--orange);border-radius:2px;"></span>Route</div>
+                <div><span style="font-size:12px;margin-right:3px;">🚌</span>Bus 138 (Live)</div>
+            </div>
+
+            <div class="track-stats-grid" id="trackStatsGrid" style="display:none">
+                <div class="track-stat-card">
+                    <div class="track-stat-label">Bus Number</div>
+                    <div class="track-stat-value">138</div>
+                    <div class="track-stat-sub">Active</div>
+                </div>
+                <div class="track-stat-card">
+                    <div class="track-stat-label">Status</div>
+                    <div class="track-stat-value" id="statStatus">—</div>
+                    <div class="track-stat-sub" id="statDelay">—</div>
+                </div>
+                <div class="track-stat-card">
+                    <div class="track-stat-label">GPS Accuracy</div>
+                    <div class="track-stat-value" id="statAccuracy">—</div>
+                    <div class="track-stat-sub">metres</div>
+                </div>
+                <div class="track-stat-card">
+                    <div class="track-stat-label">Nearest Stop</div>
+                    <div class="track-stat-value" id="statCurrentStop" style="font-size:11px">—</div>
+                    <div class="track-stat-sub">Live position</div>
+                </div>
+                <div class="track-stat-card">
+                    <div class="track-stat-label">ETA to My Stop</div>
+                    <div class="track-stat-value" id="statEtaMyStop">—</div>
+                    <div class="track-stat-sub" id="statMyStopName" style="font-size:9px">—</div>
+                </div>
+                <div class="track-stat-card">
+                    <div class="track-stat-label">Last Updated</div>
+                    <div class="track-stat-value" id="statUpdated" style="font-size:11px">—</div>
+                    <div class="track-stat-sub">Firebase RTDB</div>
+                </div>
+            </div>
+
+            <div id="routeProgressPanel" class="route-progress-wrap" style="display:none">
+                <div class="rp-title">📊 Route Progress → Panimalar Engineering College</div>
+                <div id="rpContent"></div>
+            </div>
+
+            <div id="trackerPanel" class="tracker">
+                <div style="color:var(--muted);font-size:12px;text-align:center;padding:18px">
+                    Select your boarding stop and tap Track Bus 138.
+                </div>
+            </div>
+        </div>
+
+        <!-- PROFILE -->
+        <div id="profilePage" class="page">
+            <button class="btn btn-secondary" onclick="switchPage('homePage')">← Back</button>
+            <div id="profileContent"></div>
+        </div>
+
+    </div>
+
+    <div id="bottomNav" class="bottom-nav">
+        <button class="bottom-btn active" data-nav="home" onclick="switchPage('homePage')">🏠 Home</button>
+        <button class="bottom-btn" data-nav="track" onclick="switchPage('trackPage')">📍 Live</button>
+        <button class="bottom-btn" data-nav="profile" onclick="switchPage('profilePage')">👤 Profile</button>
+    </div>
+</div>
+
+<div class="notif-container" id="notifContainer"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// FIREBASE INIT
+// ════════════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyDFw4NL7Rjzgo5xPhUWEdlRXCCg3K_EGZU",
+  authDomain: "panimalar-trasit.firebaseapp.com",
+  databaseURL: "https://panimalar-trasit-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "panimalar-trasit",
+  storageBucket: "panimalar-trasit.firebasestorage.app",
+  messagingSenderId: "32447512953",
+  appId: "1:32447512953:web:5227432cada688abf0afa8",
+  measurementId: "G-FH3R5F4B77"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+const database = getDatabase();
+
+// 🔥 REALTIME LISTENER
+onValue(ref(database, `liveLocations/${BUS_FIREBASE_ID}`), (snapshot) => {
+    const data = snapshot.val();
+
+    if (!data) return;
+
+    console.log("LIVE DATA:", data);
+
+    const lat = data.lat;
+    const lng = data.lng;
+
+    if (!lat || !lng) return;
+
+    updateBusMarker(lat, lng); // your existing function
+})
+
+// ── Firebase connection monitor ──────────────────────────────────────────────
+db.ref('.info/connected').on('value', snap => {
+    setFbStrip(snap.val() === true ? 'live' : 'offline',
+               snap.val() ? 'Firebase connected — live GPS data' : 'Firebase disconnected — retrying…');
+});
+
+function setFbStrip(state, text) {
+    const strip = document.getElementById('fbStrip');
+    const txt   = document.getElementById('fbStripText');
+    const ts    = document.getElementById('fbStripTs');
+    strip.className = 'fb-status-strip ' + state;
+    txt.textContent = text;
+    ts.textContent  = new Date().toLocaleTimeString();
+}
+
+// ── Bus ID watched by this student app ───────────────────────────────────────
+// The driver app writes to liveLocations/{busId}.
+// Bus 138 is driven by BUS101 in the driver app (same vehicle, different labels).
+// ⚠️  Change BUS_FIREBASE_ID to match whatever busId the driver logs in with.
+const BUS_FIREBASE_ID = localStorage.getItem("busId");  // ← matches driver app busId
+
+// ════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ════════════════════════════════════════════════════════════════
+const DESTINATION = "Panimalar Engineering College";
+const DEST_COORD  = [13.058500, 80.113500];
+
+const ROUTE138_STOPS = [
+    "Porur Junction",
+    "Iyyapanthagal",
+    "Durgai Amman Kovil Stop",
+    "Katupakam Auto Busstand",
+    "Katupakam",
+    "Paradise Stop",
+    "Munishvaran Kovil Stop",
+    "Dmart",
+    "Aravind Eye Hospital",
+    "Senneer Kuppam",
+    "Panimalar Engineering College"
+];
+
+const COORDS = {
+    "Porur Junction":             [13.037736, 80.135552],
+    "Iyyapanthagal":              [13.039030, 80.132648],
+    "Durgai Amman Kovil Stop":    [13.040857, 80.127750],
+    "Katupakam Auto Busstand":    [13.042522, 80.123933],
+    "Katupakam":                  [13.047330, 80.119765],
+    "Paradise Stop":              [13.047913, 80.120151],
+    "Munishvaran Kovil Stop":     [13.050300, 80.121800],
+    "Dmart":                      [13.052175, 80.122919],
+    "Aravind Eye Hospital":       [13.053110, 80.123690],
+    "Senneer Kuppam":             [13.056702, 80.113804],
+    "Panimalar Engineering College": [13.047076, 80.075582]
+};
+
+const CAMPUS_POINTS = [
+    { name:"Main Entrance Gate",     icon:"🚪", lat:13.047233247170958, lng:80.07553083848039 },
+    { name:"Admin / Admission Block",icon:"🏢", lat:13.048850145300088, lng:80.07540895317958 },
+    { name:"CSE Department",         icon:"💻", lat:13.049685242260539, lng:80.07532862941522 },
+    { name:"AIDS (AI & Data Sci.)",  icon:"🤖", lat:13.049806482709092, lng:80.0764615955046 },
+    { name:"ECE Department",         icon:"📡", lat:13.05087255939414,  lng:80.07525881054877 },
+    { name:"EEE Department",         icon:"⚡", lat:13.054592294968348, lng:80.07269418103328 },
+    { name:"IT Department",          icon:"🌐", lat:13.053480247199628, lng:80.07339790715875 },
+    { name:"CSBS Department",        icon:"💼", lat:13.051718101355666, lng:80.07600489209125 },
+    { name:"Mechanical Dept.",       icon:"🔧", lat:13.054738616658025, lng:80.07274023151132 },
+    { name:"MBA Block",              icon:"📊", lat:13.05391294313128,  lng:80.07533907315717 },
+    { name:"Mess 1 (Main Mess)",     icon:"🍛", lat:13.050841204263154, lng:80.07473998885077 },
+    { name:"Mess 2 (Hostel Mess)",   icon:"🍽️", lat:13.053515782730686, lng:80.07514570981196 }
+];
+
+// ════════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════════
+let studentProfile = { name:"Student", year:"—", department:"—" };
+let savedStop = localStorage.getItem("savedStop") || "";
+let alertState = {};
+
+// Live GPS state (populated by Firebase listener)
+let busLiveData  = null;   // raw Firebase data
+let busIsOnline  = false;  // driver is actively tracking
+let busLat       = null;
+let busLng       = null;
+let busAccuracy  = null;
+let busUpdatedAt = null;
+
+// Smooth render state (client-side lerp for map smoothness)
+let renderLat = null, renderLng = null;
+let lerpRafId = null;
+
+// Maps
+let liveMap = null, campusMap = null;
+let busMarker = null, accuracyCircle = null;
+let routeLayer = null, userMarker = null;
+let trackerInterval = null;
+
+const LERP_SPEED = 0.06;   // smooth interpolation factor (lower = smoother)
+
+
+
+// ════════════════════════════════════════════════════════════════
+// AUDIO
+// ════════════════════════════════════════════════════════════════
+let audioCtx = null;
+function ensureAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playNotifSound(type) {
+    try {
+        ensureAudio();
+        const ctx = audioCtx, now = ctx.currentTime;
+        const notes = type === 'arrive' ? [880,1046,1318] : type === 'near' ? [660,880] : [523,659];
+        notes.forEach((freq,i) => {
+            const osc = ctx.createOscillator(), gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'sine'; osc.frequency.setValueAtTime(freq, now+i*0.12);
+            gain.gain.setValueAtTime(0, now+i*0.12);
+            gain.gain.linearRampToValueAtTime(0.22, now+i*0.12+0.04);
+            gain.gain.exponentialRampToValueAtTime(0.001, now+i*0.12+0.28);
+            osc.start(now+i*0.12); osc.stop(now+i*0.12+0.3);
+        });
+    } catch(e) {}
+}
+
+// ════════════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ════════════════════════════════════════════════════════════════
+function showRealNotification(opts) {
+    const container = document.getElementById('notifContainer');
+    const card = document.createElement('div');
+    card.className = 'notif-card';
+    const now = new Date().toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
+    card.innerHTML = `
+        <div class="notif-icon">${opts.icon}</div>
+        <div class="notif-body">
+            <div class="notif-app">Panimalar Transit — Bus 138</div>
+            <div class="notif-title">${opts.title}</div>
+            <div class="notif-sub">${opts.body}</div>
+            <div class="notif-time">${now}</div>
+            <div class="notif-progress"><div class="notif-progress-fill" id="np${Date.now()}"></div></div>
+        </div>`;
+    container.appendChild(card);
+    playNotifSound(opts.type || 'near');
+    requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('show')));
+    const dur = opts.duration || 5000;
+    const fill = card.querySelector('.notif-progress-fill');
+    setTimeout(() => { fill.style.transition = `width ${dur}ms linear`; fill.style.width = '0%'; }, 100);
+    setTimeout(() => {
+        card.classList.remove('show'); card.classList.add('hide');
+        setTimeout(() => card.remove(), 400);
+    }, dur);
+    if ('Notification' in window && Notification.permission === 'granted') {
+        try { new Notification(`Bus 138 — ${opts.title}`, { body: opts.body }); } catch(e) {}
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// PAGE SWITCHING
+// ════════════════════════════════════════════════════════════════
+function switchPage(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    const navMap = { homePage:'home', trackPage:'track', profilePage:'profile' };
+    document.querySelectorAll('.bottom-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.nav === navMap[id])
+    );
+    if (id === 'trackPage') {
+        setTimeout(() => {
+            if (liveMap) liveMap.invalidateSize();
+            refreshTrackPageUI();
+        }, 150);
+    }
+    if (id === 'profilePage') renderProfile();
+    if (id === 'homePage') refreshHomeCard();
+}
+
+// ════════════════════════════════════════════════════════════════
+// MATH
+// ════════════════════════════════════════════════════════════════
+function haversineKm(lat1,lon1,lat2,lon2) {
+    const R=6371, dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
+    const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function getNearestStopIndex(lat, lng) {
+    let idx=0, minD=Infinity;
+    ROUTE_STOPS.forEach((name,si) => {
+        const c=COORDS[name]; if(!c) return;
+        const d=haversineKm(lat, lng, c[0], c[1]);
+        if(d<minD){minD=d;idx=si;}
+    });
+    return idx;
+}
+
+function getStopProgress(lat, lng) {
+    // Returns 0–1 based on which stops are passed
+    const nearestIdx = getNearestStopIndex(lat, lng);
+    return nearestIdx / (ROUTE_STOPS.length - 1);
+}
+
+// ════════════════════════════════════════════════════════════════
+// FIREBASE REAL-TIME LISTENER  ← THE CORE CHANGE
+// ════════════════════════════════════════════════════════════════
+/*
+  Listens to: liveLocations/{BUS_FIREBASE_ID}
+  Written by: driver app every GPS update (navigator.geolocation.watchPosition)
+  
+  Data shape:
+  {
+    lat: 13.045xxx,
+    lng: 80.112xxx,
+    accuracy: 14.5,
+    busId: "BUS101",
+    route: 5,
+    status: "tracking",
+    updatedAt: "2024-...",
+    timestamp: <server ms>
+  }
+  
+  When status === "offline" or data is null → bus is not tracking.
+*/
+function startFirebaseListener() {
+    const ref = db.ref(`liveLocations/${BUS_FIREBASE_ID}`);
+
+    ref.on('value', snap => {
+        const data = snap.val();
+
+        if (!data || data.status === 'offline') {
+            // Bus is not actively tracking
+            busIsOnline  = false;
+            busLiveData  = null;
+            setFbStrip('offline', `Bus 138 GPS offline — driver not tracking`);
+            setLivePill('disconnected', 'Offline');
+            showMapOfflineOverlay(true);
+            refreshHomeCard();
+            refreshTrackPageUI();
+            return;
+        }
+
+        // Valid live location received!
+        busIsOnline  = true;
+        busLiveData  = data;
+        busLat       = data.lat;
+        busLng       = data.lng;
+        busAccuracy  = data.accuracy || null;
+        busUpdatedAt = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : '--:--';
+
+        // Init render position on first update
+        if (renderLat === null) { renderLat = busLat; renderLng = busLng; }
+
+        const ts = new Date().toLocaleTimeString();
+        setFbStrip('live', `Live GPS · Bus 138 · Updated ${ts}`);
+        setLivePill('connected', 'GPS LIVE');
+        showMapOfflineOverlay(false);
+
+        // Update marker on map (smoothly via lerp loop)
+        startLerpLoop();
+
+        // Update all UI panels
+        refreshHomeCard();
+        refreshTrackPageUI();
+        handleAlerts();
+    });
+
+    // Handle disconnect
+    ref.on('disconnect', () => {
+        setFbStrip('offline', 'Firebase disconnected');
+        setLivePill('disconnected', 'Offline');
+    });
+}
+
+// ── Smooth marker movement (lerp) ─────────────────────────────────────────────
+function startLerpLoop() {
+    if (lerpRafId) return;  // already running
+    lerpRafId = requestAnimationFrame(lerpTick);
+}
+
+function lerpTick() {
+    if (busLat === null) { lerpRafId = null; return; }
+
+    renderLat += (busLat - renderLat) * LERP_SPEED;
+    renderLng += (busLng - renderLng) * LERP_SPEED;
+
+    if (busMarker) {
+        busMarker.setLatLng([renderLat, renderLng]);
+    }
+    if (accuracyCircle && busAccuracy) {
+        accuracyCircle.setLatLng([renderLat, renderLng]);
+        accuracyCircle.setRadius(busAccuracy);
+    }
+
+    lerpRafId = requestAnimationFrame(lerpTick);
+}
+
+// ════════════════════════════════════════════════════════════════
+// UI STATUS HELPERS
+// ════════════════════════════════════════════════════════════════
+function setLivePill(state, text) {
+    const pill = document.getElementById('livePill');
+    const txt  = document.getElementById('livePillText');
+    pill.className = 'live-pill ' + state;
+    txt.textContent = text;
+}
+
+function showMapOfflineOverlay(show) {
+    const ov = document.getElementById('mapOfflineOverlay');
+    const badge = document.getElementById('liveMapBadge');
+    if (ov) ov.classList.toggle('show', show);
+    if (badge) {
+        const dot  = badge.querySelector('.pulse-dot');
+        const span = document.getElementById('liveMapBadgeText');
+        if (show) {
+            dot.style.background = '#ef4444'; dot.style.animation = 'none';
+            span.textContent = 'OFFLINE';
+        } else {
+            dot.style.background = 'var(--green)'; dot.style.animation = '';
+            span.textContent = 'LIVE GPS';
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// HOME CARD REFRESH
+// ════════════════════════════════════════════════════════════════
+function refreshHomeCard() {
+    const card = document.getElementById('homeLiveCard');
+    const title = document.getElementById('homeLiveTitle');
+    const grid  = document.getElementById('homeLiveGrid');
+    if (!card) return;
+    card.classList.add('visible');
+
+    if (!busIsOnline) {
+        card.className = 'live-data-card visible waiting-mode';
+        title.textContent = 'Bus 138 GPS offline — driver not started tracking';
+        grid.style.display = 'none';
+        return;
+    }
+    card.className = 'live-data-card visible';
+    title.textContent = '🟢 Bus 138 Live GPS Active';
+    grid.style.display = 'grid';
+    document.getElementById('homeAccuracy').textContent = busAccuracy ? busAccuracy.toFixed(0) + ' m' : '—';
+    document.getElementById('homeUpdated').textContent  = busUpdatedAt || '—';
+    document.getElementById('homeStatus').textContent   = 'Tracking';
+    document.getElementById('homeRoute').textContent    = 'Route 5';
+}
+
+// ════════════════════════════════════════════════════════════════
+// TRACK PAGE REFRESH
+// ════════════════════════════════════════════════════════════════
+function refreshTrackPageUI() {
+    if (!busIsOnline) {
+        document.getElementById('statStatus').textContent = 'Offline';
+        document.getElementById('statDelay').textContent  = 'GPS not active';
+        document.getElementById('statAccuracy').textContent = '—';
+        document.getElementById('statCurrentStop').textContent = '—';
+        document.getElementById('statUpdated').textContent = '—';
+        document.getElementById('trackStatsGrid').style.display = 'none';
+        document.getElementById('routeProgressPanel').style.display = 'none';
+        document.getElementById('etaSticky').classList.remove('visible');
+        document.getElementById('myStopBanner').classList.remove('visible');
+        return;
+    }
+
+    document.getElementById('trackStatsGrid').style.display = 'grid';
+    document.getElementById('statStatus').textContent  = 'Running';
+    document.getElementById('statDelay').textContent   = 'On time';
+    document.getElementById('statAccuracy').textContent = busAccuracy ? busAccuracy.toFixed(0) : '—';
+    document.getElementById('statUpdated').textContent = busUpdatedAt || '—';
+
+    const nearestIdx  = getNearestStopIndex(busLat, busLng);
+    const nearestStop = ROUTE_STOPS[nearestIdx];
+    document.getElementById('statCurrentStop').textContent = nearestStop;
+
+    // ETA to my stop
+    if (savedStop && COORDS[savedStop]) {
+        const myCoord  = COORDS[savedStop];
+        const distKm   = haversineKm(busLat, busLng, myCoord[0], myCoord[1]);
+        const etaMin   = (distKm / 35) * 60;
+        const mins     = Math.floor(etaMin), secs = Math.floor((etaMin - mins) * 60);
+        const etaText  = etaMin < 0.5 ? 'Arriving!' : `~${etaMin.toFixed(1)} min`;
+        document.getElementById('statEtaMyStop').textContent  = etaText;
+        document.getElementById('statMyStopName').textContent = savedStop;
+
+        // Banner
+        document.getElementById('bannerStopName').textContent = savedStop;
+        document.getElementById('bannerEtaNum').textContent   = etaMin < 0.5 ? '< 1' : etaMin.toFixed(1);
+        document.getElementById('myStopBanner').classList.add('visible');
+
+        // ETA sticky card
+        document.getElementById('etaStickyTime').textContent = etaMin < 0.5 ? 'Arriving now!' : `${mins}m ${secs}s`;
+        document.getElementById('etaStickyStop').textContent = `Bus 138 → ${savedStop} → Panimalar EC`;
+        document.getElementById('etaSticky').classList.add('visible');
+    } else {
+        document.getElementById('statEtaMyStop').textContent  = '—';
+        document.getElementById('statMyStopName').textContent = 'Set a stop first';
+    }
+
+    updateRouteProgressPanel();
+    updateTrackerDOM();
+}
+
+// ════════════════════════════════════════════════════════════════
+// ALERTS (proximity based on real GPS)
+// ════════════════════════════════════════════════════════════════
+function handleAlerts() {
+    if (!savedStop || !busIsOnline) return;
+    const myCoord = COORDS[savedStop]; if (!myCoord) return;
+    const myIdx   = ROUTE_STOPS.indexOf(savedStop);  if (myIdx < 0) return;
+    const busStopIdx = getNearestStopIndex(busLat, busLng);
+
+    const twoBefore = myIdx - 2;
+    if (twoBefore >= 0 && busStopIdx === twoBefore && !alertState.two) {
+        alertState.two = true;
+        showRealNotification({
+            icon:'🔔', title:`Bus 138 is 2 stops away!`,
+            body:`Leaving ${ROUTE_STOPS[twoBefore]}. Get ready at ${savedStop}!`,
+            type:'near', duration:5000
+        });
+    }
+    const oneBefore = myIdx - 1;
+    if (oneBefore >= 0 && busStopIdx === oneBefore && !alertState.one) {
+        alertState.one = true;
+        showRealNotification({
+            icon:'⚡', title:`Bus 138 is 1 stop away!`,
+            body:`Leaving ${ROUTE_STOPS[oneBefore]}. Head to ${savedStop} now!`,
+            type:'near', duration:5000
+        });
+    }
+    const dToMine = haversineKm(busLat, busLng, myCoord[0], myCoord[1]);
+    if (dToMine < 0.12 && !alertState.arrived) {
+        alertState.arrived = true;
+        showRealNotification({
+            icon:'🚌', title:`Bus 138 ARRIVING at ${savedStop}!`,
+            body:`Board now! Bus 138 is at your stop.`,
+            type:'arrive', duration:6000
+        });
+    }
+    if (busStopIdx > myIdx && alertState.arrived) {
+        setTimeout(() => { alertState = {}; }, 60000);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ROUTE FETCHING (OSRM)
+// ════════════════════════════════════════════════════════════════
+const routeCache = {};
+async function fetchRealRoute() {
+    if (routeCache['138']) return routeCache['138'];
+    const coords = ROUTE_STOPS.map(s => COORDS[s]).filter(Boolean);
+    const coordStr = coords.map(c => `${c[1]},${c[0]}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&steps=false`;
+    try {
+        const res  = await fetch(url);
+        const data = await res.json();
+        if (data.routes && data.routes[0]) {
+            const pts = data.routes[0].geometry.coordinates.map(c => ({ lat:c[1], lng:c[0] }));
+            routeCache['138'] = pts;
+            return pts;
+        }
+    } catch(e) {}
+    // Fallback linear
+    const pts = [];
+    const allCoords = coords;
+    for (let i=0; i<allCoords.length-1; i++) {
+        const [la1,lo1]=allCoords[i],[la2,lo2]=allCoords[i+1];
+        for (let s=0;s<=50;s++){const t=s/50;pts.push({lat:la1+(la2-la1)*t,lng:lo1+(lo2-lo1)*t});}
+    }
+    routeCache['138'] = pts;
+    return pts;
+}
+
+// ════════════════════════════════════════════════════════════════
+// UI BUILDERS
+// ════════════════════════════════════════════════════════════════
+function populateStops() {
+    const sel   = document.getElementById('boardingSelect');
+    const stops = ROUTE_STOPS.filter(s => s !== DESTINATION);
+    sel.innerHTML = '<option value="">-- Pick My Boarding Stop --</option>';
+    stops.forEach(s => { const o=document.createElement('option'); o.value=o.textContent=s; sel.appendChild(o); });
+    if (savedStop && stops.includes(savedStop)) sel.value = savedStop;
+}
+
+function saveStop() {
+    const v = document.getElementById('boardingSelect').value;
+    if (!v) { showSimpleToast('Select a stop first'); return; }
+    savedStop = v;
+    localStorage.setItem("savedStop", v);
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().then(p => {
+            document.getElementById('permNote').textContent = p === 'granted'
+                ? '✅ Browser notifications enabled!' : '⚠️ Using in-app alerts instead';
+        });
+    }
+    ensureAudio();
+    alertState = {};
+    showRealNotification({
+        icon:'⭐', title:`Stop set: ${v}`,
+        body:`Alerts enabled 2 stops before, 1 stop before, and on arrival at ${v}.`,
+        type:'set', duration:4000
+    });
+}
+
+function renderProfile() {
+    document.getElementById('profileContent').innerHTML = `
+        <div class="profile-row">👤 ${studentProfile.name}</div>
+        <div class="profile-row">🎓 ${studentProfile.year}</div>
+        <div class="profile-row">🏢 ${studentProfile.department || 'Department not set'}</div>
+        <div class="profile-row">🚌 Bus Number: <strong>138</strong></div>
+        <div class="profile-row">📍 Route: Porur Junction → Panimalar Engineering College</div>
+        <div class="profile-row">⭐ My Stop: ${savedStop || 'Not set — tap Track to set'}</div>
+        <div class="profile-row">🏫 Destination: Panimalar Engineering College</div>
+        <div class="profile-row">📡 Firebase ID: <strong>${BUS_FIREBASE_ID}</strong></div>
+        <div class="profile-row">🔴 GPS Status: <strong id="profileGpsStatus">${busIsOnline ? 'Online' : 'Offline'}</strong></div>
+    `;
+}
+
+function buildCampusQuickGrid() {
+    const grid = document.getElementById('campusQuickGrid');
+    grid.innerHTML = '';
+    CAMPUS_POINTS.slice(0,6).forEach(pt => {
+        const chip = document.createElement('div');
+        chip.className = 'campus-chip';
+        chip.innerHTML = `<span class="chip-icon">${pt.icon}</span>${pt.name.split('(')[0].trim()}`;
+        chip.onclick = () => {
+            document.getElementById('campusTo').value = pt.name;
+            document.getElementById('campusNavBtn').click();
+        };
+        grid.appendChild(chip);
+    });
+}
+
+// ════════════════════════════════════════════════════════════════
+// SEARCH → LAUNCH TRACKING
+// ════════════════════════════════════════════════════════════════
+document.getElementById('searchBtn').onclick = async () => {
+    const stop = document.getElementById('boardingSelect').value;
+    if (!stop) { showSimpleToast('Select your boarding stop first'); return; }
+    savedStop = stop; localStorage.setItem("savedStop", stop);
+    alertState = {};
+    ensureAudio();
+    document.getElementById('busResults').innerHTML =
+        `<div style="text-align:center;padding:16px;color:var(--muted);font-size:12px">⏳ Loading route for Bus 138…</div>`;
+    await fetchRealRoute();
+    renderBusResults(stop);
+    showRealNotification({
+        icon:'✅', title:'Bus 138 is being tracked!',
+        body:`Live Firebase GPS tracking active for ${stop} → Panimalar EC.`,
+        type:'set', duration:4000
+    });
+};
+
+function renderBusResults(stop) {
+    const statusClass = busIsOnline ? 'status-ontime' : 'status-offline';
+    const statusText  = busIsOnline ? 'GPS Live' : 'Driver Offline';
+    const html = `
+        <div style="margin:6px 0 4px;font-size:11px;color:var(--muted)">
+            🎯 Alert stop: <strong>${stop}</strong> → <strong>Panimalar Engineering College</strong>
+        </div>
+        <div class="bus-card" onclick="openTracking()">
+            <div class="bus-card-top">
+                <div class="bus-card-meta">
+                    <div class="bus-card-num">🚌 Bus 138</div>
+                    <div class="bus-card-sub">Porur Junction → Panimalar Engineering College</div>
+                    <div style="font-size:10px;color:#64748b;margin-top:4px">
+                        📡 Firebase: <strong>${BUS_FIREBASE_ID}</strong> · 
+                        GPS: <strong>${busIsOnline ? '🟢 Live' : '🔴 Offline'}</strong>
+                    </div>
+                </div>
+                <div class="bus-card-right">
+                    <span class="badge badge-138">138</span>
+                    <span class="status-badge ${statusClass}">${statusText}</span>
+                </div>
+            </div>
+        </div>
+        <button class="btn btn-secondary" style="margin-top:4px" onclick="openTracking()">📍 Watch Live Movement</button>
+    `;
+    document.getElementById('busResults').innerHTML = html;
+}
+
+window.openTracking = () => { switchPage('trackPage'); initLiveMap(); };
+
+// ════════════════════════════════════════════════════════════════
+// LIVE MAP
+// ════════════════════════════════════════════════════════════════
+function initLiveMap() {
+    const center = busIsOnline ? [busLat, busLng] : COORDS["Katupakam"];
+    if (!liveMap) {
+        liveMap = L.map('liveMap', { zoomControl:false }).setView(center, 13);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution:'© OpenStreetMap © CARTO'
+        }).addTo(liveMap);
+        L.control.zoom({ position:'bottomright' }).addTo(liveMap);
+        startGeolocation();
+    } else {
+        liveMap.invalidateSize();
+    }
+    drawRouteOnMap();
+    createOrUpdateBusMarker();
+    refreshTrackPageUI();
+    startLerpLoop();
+
+    // Fit to route bounds
+    const routePts = routeCache['138'];
+    if (routePts && routePts.length) {
+        const bounds = L.latLngBounds(routePts.map(p => [p.lat, p.lng]));
+        liveMap.fitBounds(bounds, { padding:[40,40], maxZoom:14 });
+    }
+}
+
+async function drawRouteOnMap() {
+    if (!liveMap) return;
+    if (routeLayer) routeLayer.remove();
+    const pts = await fetchRealRoute();
+    if (!pts) return;
+    const lls = pts.map(p => [p.lat, p.lng]);
+    L.polyline(lls, { color:'#f97316', weight:10, opacity:0.15 }).addTo(liveMap);
+    routeLayer = L.polyline(lls, { color:'#f97316', weight:5, opacity:0.85, lineCap:'round', lineJoin:'round' }).addTo(liveMap);
+    // Stop markers
+    ROUTE_STOPS.forEach(name => {
+        const coord = COORDS[name]; if (!coord) return;
+        const isMySavedStop  = name === savedStop;
+        const isDestination  = name === DESTINATION;
+        const size = isDestination ? 16 : isMySavedStop ? 14 : 10;
+        const bg   = isDestination ? '#2563eb' : isMySavedStop ? '#fbbf24' : '#f97316';
+        const extraShadow = isMySavedStop ? ',0 0 0 3px rgba(251,191,36,0.4)' : isDestination ? ',0 0 0 3px rgba(37,99,235,0.4)' : '';
+        const icon = L.divIcon({
+            html:`<div style="width:${size}px;height:${size}px;background:${bg};border-radius:50%;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.25)${extraShadow}"></div>`,
+            className:'', iconSize:[size,size], iconAnchor:[size/2,size/2]
+        });
+        const label = isDestination ? `🏫 ${name}` : isMySavedStop ? `⭐ ${name} (My Stop)` : name;
+        L.marker(coord, {icon}).bindTooltip(label, { permanent:false, direction:'top', offset:[0,-8] }).addTo(liveMap);
+    });
+}
+
+function createOrUpdateBusMarker() {
+    if (!liveMap) return;
+    const lat = renderLat ?? (COORDS["Katupakam"][0]);
+    const lng = renderLng ?? (COORDS["Katupakam"][1]);
+
+    if (!busMarker) {
+        // Accuracy circle (soft halo)
+        accuracyCircle = L.circle([lat, lng], {
+            radius: busAccuracy || 30,
+            color: '#22c55e', fillColor: '#22c55e',
+            fillOpacity: 0.1, weight: 1, opacity: 0.4
+        }).addTo(liveMap);
+
+        const icon = L.divIcon({
+            html:`<div style="font-size:28px;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.4));cursor:pointer;transition:transform 0.3s">🚌</div>`,
+            className:'', iconSize:[34,34], iconAnchor:[17,30]
+        });
+        busMarker = L.marker([lat, lng], { icon, zIndexOffset:1000 }).addTo(liveMap);
+        busMarker.on('click', () => {
+            if (busIsOnline) {
+                liveMap.flyTo([busLat, busLng], 16, { animate:true, duration:0.8 });
+                showSimpleToast(`📍 Bus 138 · Accuracy: ${busAccuracy?.toFixed(0)}m · Updated: ${busUpdatedAt}`);
+            } else {
+                showSimpleToast('🔴 Bus 138 is not tracking right now');
+            }
+        });
+    } else {
+        busMarker.setLatLng([lat, lng]);
+        if (accuracyCircle) {
+            accuracyCircle.setLatLng([lat, lng]);
+            if (busAccuracy) accuracyCircle.setRadius(busAccuracy);
+        }
+    }
+
+    // Only fly to bus if it's online
+    if (busIsOnline && busLat) {
+        liveMap.flyTo([busLat, busLng], 15, { animate:true, duration:1.0 });
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ROUTE PROGRESS PANEL
+// ════════════════════════════════════════════════════════════════
+function updateRouteProgressPanel() {
+    const panel = document.getElementById('routeProgressPanel');
+    if (!busIsOnline) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+
+    const nearestIdx  = getNearestStopIndex(busLat, busLng);
+    const pct = Math.round((nearestIdx / (ROUTE_STOPS.length - 1)) * 100);
+
+    let html = `<div class="rp-bus-row">
+        <div class="rp-bus-label">
+            <span style="color:#2563eb">●</span> Bus 138
+            <span style="font-size:10px;color:var(--muted);font-weight:600">~${pct}% complete</span>
+            <span style="font-size:9px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:20px;margin-left:auto">→ Panimalar EC</span>
+        </div>
+        <div class="rp-track">
+            <div class="rp-fill" style="width:${pct}%;background:#2563eb"></div>
+            <div class="rp-bus-icon" style="left:${Math.min(pct,96)}%">🚌</div>
+        </div>
+        <div class="rp-stops">`;
+
+    ROUTE_STOPS.forEach((name, si) => {
+        const isPast    = si < nearestIdx;
+        const isCurrent = si === nearestIdx;
+        const isMyStop  = name === savedStop;
+        const isDest    = name === DESTINATION;
+        const dotClass  = isPast ? 'passed' : isCurrent ? 'current' : 'future';
+        const shortName = name.length > 8 ? name.substring(0,7)+'…' : name;
+        html += `<div class="rp-stop-dot">
+            <div class="rp-dot ${dotClass}" style="${isMyStop?'border:2px solid #fbbf24;':''}${isDest?'border:2px solid #2563eb;':''}"></div>
+            <div class="rp-stop-name" style="${isMyStop?'color:#92400e;font-weight:800;':''}${isDest?'color:#1d4ed8;font-weight:800;':''}">${isMyStop?'⭐':''}${isDest?'🏫':''}${shortName}</div>
+        </div>`;
+    });
+    html += `</div></div>`;
+    document.getElementById('rpContent').innerHTML = html;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TRACKER PANEL (stop list with ETAs)
+// ════════════════════════════════════════════════════════════════
+function updateTrackerDOM() {
+    if (!busIsOnline) {
+        document.getElementById('trackerPanel').innerHTML =
+            `<div style="color:var(--muted);font-size:12px;text-align:center;padding:18px">
+                🔴 Bus 138 GPS offline — waiting for driver to start tracking
+             </div>`;
+        return;
+    }
+
+    const nearestIdx  = getNearestStopIndex(busLat, busLng);
+    const statusClass = busIsOnline ? 'status-ontime' : 'status-offline';
+    const statusText  = busIsOnline ? 'GPS Live' : 'Offline';
+
+    let html = `<div class="tracker-bus-section">
+        <div class="tracker-bus-label">
+            🚌 Bus 138
+            <span class="tracker-bus-badge" style="background:#2563eb">138</span>
+            <span style="font-size:9px;background:#eff6ff;color:#1d4ed8;padding:2px 6px;border-radius:20px">→ Panimalar EC</span>
+            <span class="status-badge ${statusClass}" style="margin-left:auto">${statusText}</span>
+        </div>`;
+
+    ROUTE_STOPS.forEach((name, si) => {
+        const coord    = COORDS[name];
+        const isPast   = si < nearestIdx;
+        const isCurrent= si === nearestIdx;
+        const isMyStop = name === savedStop;
+        const isDest   = name === DESTINATION;
+        const stateClass = isPast ? 'past' : isCurrent ? 'current' : 'future';
+
+        let etaText = '';
+        if (!isPast && coord) {
+            const distKm = haversineKm(busLat, busLng, coord[0], coord[1]);
+            const etaMin = (distKm / 35) * 60;
+            etaText = etaMin < 0.5 ? '🟢 Arriving' : etaMin < 1 ? '< 1 min' : `${etaMin.toFixed(1)} min`;
+        } else if (isPast) {
+            etaText = 'Passed ✓';
+        }
+        const isLast = si === ROUTE_STOPS.length - 1;
+        html += `<div class="stop-row ${stateClass}${isMyStop?' my-stop':''}">
+            <div class="stop-timeline">
+                <div class="stop-circle"></div>
+                ${!isLast ? '<div class="stop-connector"></div>' : ''}
+            </div>
+            <div class="stop-info">
+                <div class="stop-name-text" style="${isDest?'color:#1d4ed8;font-weight:800':''}">
+                    ${isDest?'🏫 ':''}${name}${isMyStop?'<span class="my-stop-pin">My Stop</span>':''}
+                </div>
+                <div class="stop-eta">${etaText}</div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+    document.getElementById('trackerPanel').innerHTML = html;
+}
+
+// ════════════════════════════════════════════════════════════════
+// GEOLOCATION (user's own position on map)
+// ════════════════════════════════════════════════════════════════
+function startGeolocation() {
+    if (!navigator.geolocation || !liveMap) return;
+    navigator.geolocation.watchPosition(pos => {
+        const {latitude:lat, longitude:lng} = pos.coords;
+        if (!userMarker) {
+            const icon = L.divIcon({
+                html:`<div style="width:14px;height:14px;background:#3b82f6;border-radius:50%;border:3px solid white;box-shadow:0 0 0 4px rgba(59,130,246,0.35)"></div>`,
+                className:'', iconSize:[14,14], iconAnchor:[7,7]
+            });
+            userMarker = L.marker([lat,lng],{icon}).bindTooltip('You',{direction:'top'}).addTo(liveMap);
+        } else { userMarker.setLatLng([lat,lng]); }
+    }, ()=>{}, {enableHighAccuracy:true});
+}
+
+// ════════════════════════════════════════════════════════════════
+// CAMPUS NAVIGATOR
+// ════════════════════════════════════════════════════════════════
+function initCampusNav() {
+    const from = document.getElementById('campusFrom');
+    const to   = document.getElementById('campusTo');
+    CAMPUS_POINTS.forEach(p => {
+        from.appendChild(new Option(p.name, p.name));
+        to.appendChild(new Option(p.name, p.name));
+    });
+    if (to.options.length > 0) to.value = CAMPUS_POINTS[0].name;
+    buildCampusQuickGrid();
+
+    let campusRouteL = null, campusMks = [];
+    document.getElementById('campusNavBtn').onclick = async () => {
+        const f = CAMPUS_POINTS.find(p=>p.name===from.value);
+        const t = CAMPUS_POINTS.find(p=>p.name===to.value);
+        if (!f||!t) { showSimpleToast('Select both points'); return; }
+        if (!campusMap) {
+            campusMap = L.map('campusMapDiv').setView([f.lat,f.lng],18);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                attribution:'© OpenStreetMap © CARTO'
+            }).addTo(campusMap);
+        }
+        const bar = document.getElementById('campusInfoBar');
+        bar.style.display = 'flex';
+        bar.innerHTML = `${f.icon} ${f.name.split('(')[0]} → ${t.icon} ${t.name.split('(')[0]}`;
+        try {
+            const res  = await fetch(`https://router.project-osrm.org/route/v1/walking/${f.lng},${f.lat};${t.lng},${t.lat}?overview=full&geometries=geojson`);
+            const data = await res.json();
+            const coords = data.routes?.[0]?.geometry?.coordinates || [[f.lng,f.lat],[t.lng,t.lat]];
+            if (campusRouteL) campusRouteL.remove();
+            campusMks.forEach(m=>m.remove()); campusMks=[];
+            const lls = coords.map(c=>[c[1],c[0]]);
+            L.polyline(lls,{color:'#10b981',weight:10,opacity:.18}).addTo(campusMap);
+            campusRouteL = L.polyline(lls,{color:'#10b981',weight:5,opacity:.9,lineCap:'round'}).addTo(campusMap);
+            [f,t].forEach((pt,i) => {
+                const icon = L.divIcon({
+                    html:`<div style="background:${i===0?'#22c55e':'#2563eb'};color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${pt.icon}</div>`,
+                    className:'',iconSize:[24,24],iconAnchor:[12,12]
+                });
+                const m = L.marker([pt.lat,pt.lng],{icon})
+                    .bindTooltip(i===0?`Start: ${pt.name}`:`End: ${pt.name}`,{permanent:true,direction:'top'})
+                    .addTo(campusMap);
+                campusMks.push(m);
+            });
+            CAMPUS_POINTS.forEach(pt => {
+                if (pt.name===f.name||pt.name===t.name) return;
+                const si = L.divIcon({
+                    html:`<div style="background:white;border:1.5px solid #94a3b8;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:9px">${pt.icon}</div>`,
+                    className:'',iconSize:[18,18],iconAnchor:[9,9]
+                });
+                L.marker([pt.lat,pt.lng],{icon:si}).bindTooltip(pt.name,{direction:'top'}).addTo(campusMap);
+            });
+            campusMap.fitBounds(campusRouteL.getBounds(),{padding:[60,60]});
+        } catch(e) { showSimpleToast('Route fetch failed'); }
+    };
+}
+
+// ════════════════════════════════════════════════════════════════
+// TOAST
+// ════════════════════════════════════════════════════════════════
+let toastEl = null;
+function showSimpleToast(msg) {
+    if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(15,23,42,.9);color:white;padding:9px 18px;border-radius:50px;font-size:12px;font-weight:700;z-index:9998;opacity:0;transition:.25s;pointer-events:none;white-space:nowrap;font-family:Plus Jakarta Sans,sans-serif';
+        document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.style.opacity='1'; toastEl.style.transform='translateX(-50%) translateY(0)';
+    clearTimeout(toastEl._tid);
+    toastEl._tid = setTimeout(()=>{ toastEl.style.opacity='0'; toastEl.style.transform='translateX(-50%) translateY(20px)'; }, 2500);
+}
+
+// ════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════
+window.onload=() =>{
+    populateStops();
+    initCampusNav();
+    startFirebaseListener();   // ← starts the real-time GPS listener
+}
+if (savedStop) {
+    document.getElementById('bannerStopName').textContent = savedStop;
+}
+console.log("BUS ID:", BUS_FIREBASE_ID);
+window.switchPage  = switchPage;
+window.saveStop    = saveStop;
+window.openTracking = openTracking;
+</script>
+</body>
+</html>
